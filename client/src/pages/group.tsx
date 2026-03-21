@@ -132,7 +132,7 @@ export default function GroupPage() {
             </Link>
             <div className="min-w-0">
               <h1 className="font-bold text-sm truncate">{group?.name}</h1>
-              <p className="text-xs text-muted-foreground">{members?.length || 0} members</p>
+              <p className="text-xs text-muted-foreground">{members?.length || 0} {(members?.length || 0) === 1 ? 'member' : 'members'}</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -158,7 +158,7 @@ export default function GroupPage() {
             <CardContent className="pt-4 pb-3 text-center">
               <p className="text-xs text-muted-foreground mb-1">Your Balance</p>
               <p className={`text-lg font-bold ${(myBalance?.amount || 0) > 0 ? "text-emerald-600 dark:text-emerald-400" : (myBalance?.amount || 0) < 0 ? "text-red-500" : ""}`}>
-                {(myBalance?.amount || 0) >= 0 ? "+" : ""}${Math.abs(myBalance?.amount || 0).toFixed(2)}
+                {(myBalance?.amount || 0) > 0 ? "+" : (myBalance?.amount || 0) < 0 ? "-" : ""}${Math.abs(myBalance?.amount || 0).toFixed(2)}
               </p>
             </CardContent>
           </Card>

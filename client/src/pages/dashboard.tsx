@@ -84,7 +84,7 @@ export default function Dashboard() {
                 <div>
                   <p className="text-xs text-muted-foreground font-medium">Overall Balance</p>
                   <p className={`text-lg font-bold ${totalBalance > 0 ? "text-emerald-600 dark:text-emerald-400" : totalBalance < 0 ? "text-red-500" : "text-foreground"}`}>
-                    {totalBalance >= 0 ? "+" : ""}${Math.abs(totalBalance).toFixed(2)}
+                    {totalBalance > 0 ? "+" : totalBalance < 0 ? "-" : ""}${Math.abs(totalBalance).toFixed(2)}
                   </p>
                 </div>
               </div>
