@@ -43,11 +43,11 @@ export function JoinGroupDialog({ open, onOpenChange }: { open: boolean; onOpenC
             <Input
               id="invite-code"
               data-testid="input-invite-code"
-              placeholder="e.g. A1B2C3D4"
+              placeholder="e.g. A1B2C3D4E5F6"
               value={code}
               onChange={e => setCode(e.target.value.toUpperCase())}
               className="font-mono text-center tracking-widest text-lg"
-              maxLength={8}
+              maxLength={12}
               required
             />
           </div>
