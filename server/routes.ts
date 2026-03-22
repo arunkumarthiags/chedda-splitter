@@ -1,22 +1,37 @@
 import type { Express, Request, Response, NextFunction } from "express";
-import { createServer, type Server } from "http";
+import type { Server } from "http";
 import { storage } from "./storage";
-import session from "express-session";
-import createMemoryStore from "memorystore";
-import passport from "passport";
-import { Strategy as LocalStrategy } from "passport-local";
-import crypto from "crypto";
+import { supabase } from "./supabase";
+import type { User } from "@shared/schema";
 
-const MemoryStore = createMemoryStore(session);
-
-function hashPassword(password: string): string {
-  return crypto.createHash("sha256").update(password).digest("hex");
+declare global {
+  namespace Express {
+    interface Request {
+      user?: User;
+    }
+  }
 }
 
-function requireAuth(req: Request, res: Response, next: NextFunction) {
-  if (!req.isAuthenticated()) {
+function toSafeUser(user: User) {
+  const { password: _p, authId: _a, ...safe } = user;
+  return safe;
+}
+
+async function requireAuth(req: Request, res: Response, next: NextFunction) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
     return res.status(401).json({ message: "Not authenticated" });
   }
+  const token = authHeader.slice(7);
+  const { data, error } = await supabase.auth.getUser(token);
+  if (error || !data.user) {
+    return res.status(401).json({ message: "Not authenticated" });
+  }
+  const dbUser = await storage.getUserByAuthId(data.user.id);
+  if (!dbUser) {
+    return res.status(401).json({ message: "Not authenticated" });
+  }
+  req.user = dbUser;
   next();
 }
 
@@ -24,49 +39,6 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
-  // Session setup
-  app.use(
-    session({
-      secret: "splitwise-clone-secret-key-2026",
-      resave: false,
-      saveUninitialized: false,
-      store: new MemoryStore({ checkPeriod: 86400000 }),
-      cookie: { maxAge: 7 * 24 * 60 * 60 * 1000 },
-    })
-  );
-
-  // Passport setup
-  app.use(passport.initialize());
-  app.use(passport.session());
-
-  passport.use(
-    new LocalStrategy(async (username, password, done) => {
-      try {
-        const user = await storage.getUserByUsername(username);
-        if (!user) return done(null, false, { message: "User not found" });
-        if (user.password !== hashPassword(password)) {
-          return done(null, false, { message: "Invalid password" });
-        }
-        return done(null, user);
-      } catch (err) {
-        return done(err);
-      }
-    })
-  );
-
-  passport.serializeUser((user: any, done) => {
-    done(null, user.id);
-  });
-
-  passport.deserializeUser(async (id: number, done) => {
-    try {
-      const user = await storage.getUser(id);
-      done(null, user || false);
-    } catch (err) {
-      done(err);
-    }
-  });
-
   // === AUTH ROUTES ===
   app.post("/api/auth/register", async (req, res) => {
     try {
@@ -86,55 +58,80 @@ export async function registerRoutes(
         return res.status(400).json({ message: "Username already taken" });
       }
 
-      const user = await storage.createUser({
-        username,
-        password: hashPassword(password),
-        displayName,
+      const syntheticEmail = `${username}@splittrip.internal`;
+
+      const { data: authData, error: createError } = await supabase.auth.admin.createUser({
+        email: syntheticEmail,
+        password,
+        email_confirm: true,
       });
 
-      req.login(user, (err) => {
-        if (err) return res.status(500).json({ message: "Login failed" });
-        const { password: _, ...safeUser } = user;
-        return res.json(safeUser);
+      if (createError || !authData.user) {
+        return res.status(500).json({ message: createError?.message || "Failed to create auth user" });
+      }
+
+      const user = await storage.createUser({
+        username,
+        password: "",
+        displayName,
+        authId: authData.user.id,
       });
+
+      const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+        email: syntheticEmail,
+        password,
+      });
+
+      if (signInError || !signInData.session) {
+        return res.status(500).json({ message: "Registration succeeded but login failed" });
+      }
+
+      return res.json({ ...toSafeUser(user), token: signInData.session.access_token });
     } catch (err: any) {
       return res.status(500).json({ message: err.message });
     }
   });
 
-  app.post("/api/auth/login", (req, res, next) => {
-    passport.authenticate("local", (err: any, user: any, info: any) => {
-      if (err) return res.status(500).json({ message: err.message });
-      if (!user) return res.status(401).json({ message: info?.message || "Invalid credentials" });
+  app.post("/api/auth/login", async (req, res) => {
+    try {
+      const { username, password } = req.body;
+      if (!username || !password) {
+        return res.status(400).json({ message: "Username and password are required" });
+      }
 
-      req.login(user, (loginErr) => {
-        if (loginErr) return res.status(500).json({ message: "Login failed" });
-        const { password: _, ...safeUser } = user;
-        return res.json(safeUser);
+      const dbUser = await storage.getUserByUsername(username);
+      if (!dbUser) {
+        return res.status(401).json({ message: "Invalid credentials" });
+      }
+
+      const syntheticEmail = `${username}@splittrip.internal`;
+      const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+        email: syntheticEmail,
+        password,
       });
-    })(req, res, next);
-  });
 
-  app.post("/api/auth/logout", (req, res) => {
-    req.logout((err) => {
-      if (err) return res.status(500).json({ message: "Logout failed" });
-      return res.json({ message: "Logged out" });
-    });
-  });
+      if (signInError || !signInData.session) {
+        return res.status(401).json({ message: "Invalid credentials" });
+      }
 
-  app.get("/api/auth/me", (req, res) => {
-    if (!req.isAuthenticated()) {
-      return res.status(401).json({ message: "Not authenticated" });
+      return res.json({ ...toSafeUser(dbUser), token: signInData.session.access_token });
+    } catch (err: any) {
+      return res.status(500).json({ message: err.message });
     }
-    const user = req.user as any;
-    const { password: _, ...safeUser } = user;
-    return res.json(safeUser);
+  });
+
+  app.post("/api/auth/logout", (_req, res) => {
+    return res.json({ message: "Logged out" });
+  });
+
+  app.get("/api/auth/me", requireAuth, (req, res) => {
+    return res.json(toSafeUser(req.user!));
   });
 
   // === GROUP ROUTES ===
   app.post("/api/groups", requireAuth, async (req, res) => {
     try {
-      const user = req.user as any;
+      const user = req.user!;
       const group = await storage.createGroup(req.body, user.id);
       return res.json(group);
     } catch (err: any) {
@@ -144,7 +141,7 @@ export async function registerRoutes(
 
   app.get("/api/groups", requireAuth, async (req, res) => {
     try {
-      const user = req.user as any;
+      const user = req.user!;
       const groups = await storage.getUserGroups(user.id);
       return res.json(groups);
     } catch (err: any) {
@@ -154,8 +151,8 @@ export async function registerRoutes(
 
   app.get("/api/groups/:id", requireAuth, async (req, res) => {
     try {
-      const user = req.user as any;
-      const groupId = parseInt(req.params.id);
+      const user = req.user!;
+      const groupId = parseInt(req.params.id as string);
       const isMember = await storage.isGroupMember(groupId, user.id);
       if (!isMember) return res.status(403).json({ message: "Not a member of this group" });
 
@@ -169,16 +166,13 @@ export async function registerRoutes(
 
   app.get("/api/groups/:id/members", requireAuth, async (req, res) => {
     try {
-      const user = req.user as any;
-      const groupId = parseInt(req.params.id);
+      const user = req.user!;
+      const groupId = parseInt(req.params.id as string);
       const isMember = await storage.isGroupMember(groupId, user.id);
       if (!isMember) return res.status(403).json({ message: "Not a member" });
 
       const members = await storage.getGroupMembers(groupId);
-      const safeMems = members.map(m => {
-        const { password: _, ...safeUser } = m.user;
-        return { ...m, user: safeUser };
-      });
+      const safeMems = members.map(m => ({ ...m, user: toSafeUser(m.user) }));
       return res.json(safeMems);
     } catch (err: any) {
       return res.status(500).json({ message: err.message });
@@ -187,7 +181,7 @@ export async function registerRoutes(
 
   app.post("/api/groups/join", requireAuth, async (req, res) => {
     try {
-      const user = req.user as any;
+      const user = req.user!;
       const { inviteCode } = req.body;
       if (!inviteCode) return res.status(400).json({ message: "Invite code required" });
 
@@ -207,23 +201,23 @@ export async function registerRoutes(
   // === EXPENSE ROUTES ===
   app.post("/api/groups/:id/expenses", requireAuth, async (req, res) => {
     try {
-      const user = req.user as any;
-      const groupId = parseInt(req.params.id);
+      const user = req.user!;
+      const groupId = parseInt(req.params.id as string);
       const isMember = await storage.isGroupMember(groupId, user.id);
       if (!isMember) return res.status(403).json({ message: "Not a member" });
 
       const { description, amount, paidById, category, splitType, splits, notes } = req.body;
-      
+
       if (!description || !amount || !paidById || !splits || splits.length === 0) {
         return res.status(400).json({ message: "Missing required fields" });
       }
 
       const expense = await storage.createExpense(
-        { groupId, description, amount: parseFloat(amount), paidById, category: category || "general", splitType: splitType || "equal", notes },
+        { groupId, description, amount: String(parseFloat(amount)), paidById, category: category || "general", splitType: splitType || "equal", notes },
         splits.map((s: any) => ({ userId: s.userId, amount: parseFloat(s.amount) }))
       );
 
-      return res.json(expense);
+      return res.json({ ...expense, amount: parseFloat(expense.amount) });
     } catch (err: any) {
       return res.status(500).json({ message: err.message });
     }
@@ -231,20 +225,18 @@ export async function registerRoutes(
 
   app.get("/api/groups/:id/expenses", requireAuth, async (req, res) => {
     try {
-      const user = req.user as any;
-      const groupId = parseInt(req.params.id);
+      const user = req.user!;
+      const groupId = parseInt(req.params.id as string);
       const isMember = await storage.isGroupMember(groupId, user.id);
       if (!isMember) return res.status(403).json({ message: "Not a member" });
 
       const expenses = await storage.getGroupExpenses(groupId);
-      const safe = expenses.map(e => {
-        const { password: _, ...safePaidBy } = e.paidBy;
-        const safeSplits = e.splits.map(s => {
-          const { password: __, ...safeU } = s.user;
-          return { ...s, user: safeU };
-        });
-        return { ...e, paidBy: safePaidBy, splits: safeSplits };
-      });
+      const safe = expenses.map(e => ({
+        ...e,
+        amount: parseFloat(e.amount),
+        paidBy: toSafeUser(e.paidBy),
+        splits: e.splits.map(s => ({ ...s, amount: parseFloat(s.amount), user: toSafeUser(s.user) })),
+      }));
       return res.json(safe);
     } catch (err: any) {
       return res.status(500).json({ message: err.message });
@@ -253,8 +245,9 @@ export async function registerRoutes(
 
   app.delete("/api/expenses/:id", requireAuth, async (req, res) => {
     try {
-      const id = parseInt(req.params.id);
-      await storage.deleteExpense(id);
+      const user = req.user!;
+      const id = parseInt(req.params.id as string);
+      await storage.deleteExpense(id, user.id);
       return res.json({ message: "Deleted" });
     } catch (err: any) {
       return res.status(500).json({ message: err.message });
@@ -264,8 +257,8 @@ export async function registerRoutes(
   // === SETTLEMENT ROUTES ===
   app.post("/api/groups/:id/settlements", requireAuth, async (req, res) => {
     try {
-      const user = req.user as any;
-      const groupId = parseInt(req.params.id);
+      const user = req.user!;
+      const groupId = parseInt(req.params.id as string);
       const isMember = await storage.isGroupMember(groupId, user.id);
       if (!isMember) return res.status(403).json({ message: "Not a member" });
 
@@ -278,10 +271,10 @@ export async function registerRoutes(
         groupId,
         paidById,
         paidToId,
-        amount: parseFloat(amount),
+        amount: String(parseFloat(amount)),
         notes,
       });
-      return res.json(settlement);
+      return res.json({ ...settlement, amount: parseFloat(settlement.amount) });
     } catch (err: any) {
       return res.status(500).json({ message: err.message });
     }
@@ -289,17 +282,18 @@ export async function registerRoutes(
 
   app.get("/api/groups/:id/settlements", requireAuth, async (req, res) => {
     try {
-      const user = req.user as any;
-      const groupId = parseInt(req.params.id);
+      const user = req.user!;
+      const groupId = parseInt(req.params.id as string);
       const isMember = await storage.isGroupMember(groupId, user.id);
       if (!isMember) return res.status(403).json({ message: "Not a member" });
 
       const settlements = await storage.getGroupSettlements(groupId);
-      const safe = settlements.map(s => {
-        const { password: _1, ...safePaidBy } = s.paidBy;
-        const { password: _2, ...safePaidTo } = s.paidTo;
-        return { ...s, paidBy: safePaidBy, paidTo: safePaidTo };
-      });
+      const safe = settlements.map(s => ({
+        ...s,
+        amount: parseFloat(s.amount),
+        paidBy: toSafeUser(s.paidBy),
+        paidTo: toSafeUser(s.paidTo),
+      }));
       return res.json(safe);
     } catch (err: any) {
       return res.status(500).json({ message: err.message });
@@ -309,8 +303,8 @@ export async function registerRoutes(
   // === BALANCE ROUTES ===
   app.get("/api/groups/:id/balances", requireAuth, async (req, res) => {
     try {
-      const user = req.user as any;
-      const groupId = parseInt(req.params.id);
+      const user = req.user!;
+      const groupId = parseInt(req.params.id as string);
       const isMember = await storage.isGroupMember(groupId, user.id);
       if (!isMember) return res.status(403).json({ message: "Not a member" });
 
@@ -323,8 +317,8 @@ export async function registerRoutes(
 
   app.get("/api/groups/:id/debts", requireAuth, async (req, res) => {
     try {
-      const user = req.user as any;
-      const groupId = parseInt(req.params.id);
+      const user = req.user!;
+      const groupId = parseInt(req.params.id as string);
       const isMember = await storage.isGroupMember(groupId, user.id);
       if (!isMember) return res.status(403).json({ message: "Not a member" });
 
@@ -337,7 +331,7 @@ export async function registerRoutes(
 
   app.get("/api/user/balance", requireAuth, async (req, res) => {
     try {
-      const user = req.user as any;
+      const user = req.user!;
       const balance = await storage.getUserTotalBalance(user.id);
       return res.json({ balance });
     } catch (err: any) {
@@ -348,8 +342,8 @@ export async function registerRoutes(
   // === ACTIVITY ROUTES ===
   app.get("/api/groups/:id/activity", requireAuth, async (req, res) => {
     try {
-      const user = req.user as any;
-      const groupId = parseInt(req.params.id);
+      const user = req.user!;
+      const groupId = parseInt(req.params.id as string);
       const isMember = await storage.isGroupMember(groupId, user.id);
       if (!isMember) return res.status(403).json({ message: "Not a member" });
 
@@ -362,9 +356,24 @@ export async function registerRoutes(
 
   app.get("/api/activity", requireAuth, async (req, res) => {
     try {
-      const user = req.user as any;
+      const user = req.user!;
       const activity = await storage.getUserActivity(user.id);
       return res.json(activity);
+    } catch (err: any) {
+      return res.status(500).json({ message: err.message });
+    }
+  });
+
+  // === AUDIT LOG ROUTES ===
+  app.get("/api/groups/:id/audit", requireAuth, async (req, res) => {
+    try {
+      const user = req.user!;
+      const groupId = parseInt(req.params.id as string);
+      const isMember = await storage.isGroupMember(groupId, user.id);
+      if (!isMember) return res.status(403).json({ message: "Not a member" });
+
+      const logs = await storage.getGroupAuditLogs(groupId);
+      return res.json(logs);
     } catch (err: any) {
       return res.status(500).json({ message: err.message });
     }

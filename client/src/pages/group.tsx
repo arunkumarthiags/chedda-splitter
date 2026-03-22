@@ -16,7 +16,7 @@ import { PerplexityAttribution } from "@/components/PerplexityAttribution";
 import {
   ArrowLeft, Plus, Handshake, Copy, Check, Receipt, Wallet,
   Users, ArrowRight, Utensils, Car, BedDouble, Wine, Tent,
-  ShoppingBag, MoreHorizontal, Trash2,
+  ShoppingBag, MoreHorizontal, Trash2, History,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -76,6 +76,12 @@ export default function GroupPage() {
     enabled: groupId > 0,
   });
 
+  const { data: auditLogs } = useQuery<any[]>({
+    queryKey: ["/api/groups", groupId, "audit"],
+    queryFn: getQueryFn({ on401: "throw" }),
+    enabled: groupId > 0,
+  });
+
   const myBalance = balances?.find((b: any) => b.userId === user?.id);
 
   function copyInviteCode() {
@@ -93,6 +99,7 @@ export default function GroupPage() {
       queryClient.invalidateQueries({ queryKey: ["/api/groups", groupId, "expenses"] });
       queryClient.invalidateQueries({ queryKey: ["/api/groups", groupId, "balances"] });
       queryClient.invalidateQueries({ queryKey: ["/api/groups", groupId, "debts"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/groups", groupId, "audit"] });
       queryClient.invalidateQueries({ queryKey: ["/api/user/balance"] });
       queryClient.invalidateQueries({ queryKey: ["/api/activity"] });
       toast({ title: "Expense deleted" });
@@ -194,6 +201,7 @@ export default function GroupPage() {
             <TabsTrigger value="expenses" className="flex-1" data-testid="tab-expenses">Expenses</TabsTrigger>
             <TabsTrigger value="balances" className="flex-1" data-testid="tab-balances">Balances</TabsTrigger>
             <TabsTrigger value="members" className="flex-1" data-testid="tab-members">Members</TabsTrigger>
+            <TabsTrigger value="audit" className="flex-1" data-testid="tab-audit">Audit</TabsTrigger>
           </TabsList>
 
           {/* Expenses tab */}
@@ -367,6 +375,39 @@ export default function GroupPage() {
                 {copiedCode ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4 text-muted-foreground" />}
               </button>
             </div>
+          </TabsContent>
+
+          {/* Audit tab */}
+          <TabsContent value="audit" className="mt-4">
+            {auditLogs && auditLogs.length > 0 ? (
+              <Card>
+                <CardContent className="p-0 divide-y">
+                  {auditLogs.map((log: any) => (
+                    <div key={log.id} className="px-4 py-3 flex items-start gap-3">
+                      <div className="p-2 rounded-lg bg-muted shrink-0 mt-0.5">
+                        <History className="w-4 h-4 text-muted-foreground" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium">{log.details}</p>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          {new Date(log.createdAt).toLocaleString()}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            ) : (
+              <Card>
+                <CardContent className="py-12 text-center">
+                  <div className="w-12 h-12 rounded-full bg-muted flex items-center justify-center mx-auto mb-4">
+                    <History className="w-6 h-6 text-muted-foreground" />
+                  </div>
+                  <h3 className="font-semibold mb-1">No audit history yet</h3>
+                  <p className="text-sm text-muted-foreground">Changes to this group will appear here.</p>
+                </CardContent>
+              </Card>
+            )}
           </TabsContent>
         </Tabs>
 

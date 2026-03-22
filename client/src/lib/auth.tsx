@@ -1,6 +1,8 @@
 import { createContext, useContext, useState, useCallback, useEffect } from "react";
-import { apiRequest } from "./queryClient";
+import { apiRequest, setAuthToken } from "./queryClient";
 import { queryClient } from "./queryClient";
+
+const TOKEN_KEY = "splittrip_token";
 
 type User = {
   id: number;
@@ -25,29 +27,45 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
+    const storedToken = localStorage.getItem(TOKEN_KEY);
+    if (storedToken) {
+      setAuthToken(storedToken);
+    }
     apiRequest("GET", "/api/auth/me")
       .then(res => res.json())
       .then(u => setUser(u))
-      .catch(() => setUser(null))
+      .catch(() => {
+        localStorage.removeItem(TOKEN_KEY);
+        setAuthToken(null);
+        setUser(null);
+      })
       .finally(() => setIsLoading(false));
   }, []);
 
   const login = useCallback(async (username: string, password: string) => {
     const res = await apiRequest("POST", "/api/auth/login", { username, password });
     const u = await res.json();
-    setUser(u);
+    const { token, ...userData } = u;
+    localStorage.setItem(TOKEN_KEY, token);
+    setAuthToken(token);
+    setUser(userData);
     queryClient.clear();
   }, []);
 
   const register = useCallback(async (username: string, password: string, displayName: string) => {
     const res = await apiRequest("POST", "/api/auth/register", { username, password, displayName });
     const u = await res.json();
-    setUser(u);
+    const { token, ...userData } = u;
+    localStorage.setItem(TOKEN_KEY, token);
+    setAuthToken(token);
+    setUser(userData);
     queryClient.clear();
   }, []);
 
   const logout = useCallback(async () => {
     await apiRequest("POST", "/api/auth/logout");
+    localStorage.removeItem(TOKEN_KEY);
+    setAuthToken(null);
     setUser(null);
     queryClient.clear();
   }, []);

@@ -47,7 +47,7 @@ export default function AuthPage() {
               <path d="M10 11h12M10 16h8M10 21h10" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
               <circle cx="24" cy="21" r="3" fill="currentColor" />
             </svg>
-            <span className="text-xl font-bold tracking-tight">SplitTrip</span>
+            <span className="text-xl font-bold tracking-tight">CheddaSplit</span>
           </div>
           <p className="text-sm opacity-80 mt-1">Split expenses effortlessly with friends</p>
         </div>
@@ -83,9 +83,7 @@ export default function AuthPage() {
         </div>
 
         <p className="text-xs opacity-50">
-          <a href="https://www.perplexity.ai/computer" target="_blank" rel="noopener noreferrer">
-            Created with Perplexity Computer
-          </a>
+          Created with ♥ in San Jose, CA
         </p>
       </div>
 
@@ -99,7 +97,7 @@ export default function AuthPage() {
                 <path d="M10 11h12M10 16h8M10 21h10" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
                 <circle cx="24" cy="21" r="3" fill="currentColor" />
               </svg>
-              <span className="text-lg font-bold text-primary">SplitTrip</span>
+              <span className="text-lg font-bold text-primary">CheddaSplit</span>
             </div>
             <CardTitle>{isLogin ? "Welcome back" : "Create your account"}</CardTitle>
             <CardDescription>

@@ -1,12 +1,13 @@
-import { sqliteTable, text, integer, real } from "drizzle-orm/sqlite-core";
+import { pgTable, text, integer, serial, numeric } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
 // Users
-export const users = sqliteTable("users", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const users = pgTable("users", {
+  id: serial("id").primaryKey(),
+  authId: text("auth_id").unique(),
   username: text("username").notNull().unique(),
-  password: text("password").notNull(),
+  password: text("password").notNull().default(""),
   displayName: text("display_name").notNull(),
   email: text("email"),
   avatarColor: text("avatar_color").notNull().default("#1B9C85"),
@@ -23,8 +24,8 @@ export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
 
 // Groups
-export const groups = sqliteTable("groups", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const groups = pgTable("groups", {
+  id: serial("id").primaryKey(),
   name: text("name").notNull(),
   description: text("description"),
   category: text("category").notNull().default("trip"), // trip, home, couple, other
@@ -43,8 +44,8 @@ export type InsertGroup = z.infer<typeof insertGroupSchema>;
 export type Group = typeof groups.$inferSelect;
 
 // Group Members
-export const groupMembers = sqliteTable("group_members", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const groupMembers = pgTable("group_members", {
+  id: serial("id").primaryKey(),
   groupId: integer("group_id").notNull().references(() => groups.id),
   userId: integer("user_id").notNull().references(() => users.id),
   joinedAt: text("joined_at").notNull().default(""),
@@ -53,11 +54,11 @@ export const groupMembers = sqliteTable("group_members", {
 export type GroupMember = typeof groupMembers.$inferSelect;
 
 // Expenses
-export const expenses = sqliteTable("expenses", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const expenses = pgTable("expenses", {
+  id: serial("id").primaryKey(),
   groupId: integer("group_id").notNull().references(() => groups.id),
   description: text("description").notNull(),
-  amount: real("amount").notNull(),
+  amount: numeric("amount", { precision: 12, scale: 4 }).notNull(),
   paidById: integer("paid_by_id").notNull().references(() => users.id),
   category: text("category").notNull().default("general"), // food, transport, stay, drinks, activities, shopping, general
   splitType: text("split_type").notNull().default("equal"), // equal, exact, percentage
@@ -79,22 +80,22 @@ export type InsertExpense = z.infer<typeof insertExpenseSchema>;
 export type Expense = typeof expenses.$inferSelect;
 
 // Expense Splits (who owes what for each expense)
-export const expenseSplits = sqliteTable("expense_splits", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const expenseSplits = pgTable("expense_splits", {
+  id: serial("id").primaryKey(),
   expenseId: integer("expense_id").notNull().references(() => expenses.id),
   userId: integer("user_id").notNull().references(() => users.id),
-  amount: real("amount").notNull(), // how much this user owes for this expense
+  amount: numeric("amount", { precision: 12, scale: 4 }).notNull(), // how much this user owes for this expense
 });
 
 export type ExpenseSplit = typeof expenseSplits.$inferSelect;
 
 // Settlements (recording payments between users)
-export const settlements = sqliteTable("settlements", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const settlements = pgTable("settlements", {
+  id: serial("id").primaryKey(),
   groupId: integer("group_id").notNull().references(() => groups.id),
   paidById: integer("paid_by_id").notNull().references(() => users.id),
   paidToId: integer("paid_to_id").notNull().references(() => users.id),
-  amount: real("amount").notNull(),
+  amount: numeric("amount", { precision: 12, scale: 4 }).notNull(),
   createdAt: text("created_at").notNull().default(""),
   notes: text("notes"),
 });
@@ -109,6 +110,18 @@ export const insertSettlementSchema = createInsertSchema(settlements).pick({
 
 export type InsertSettlement = z.infer<typeof insertSettlementSchema>;
 export type Settlement = typeof settlements.$inferSelect;
+
+// Audit Logs
+export const auditLogs = pgTable("audit_logs", {
+  id: serial("id").primaryKey(),
+  groupId: integer("group_id").notNull().references(() => groups.id),
+  userId: integer("user_id").notNull().references(() => users.id),
+  action: text("action").notNull(), // expense_created, expense_deleted, settlement_created, group_created, member_joined
+  details: text("details").notNull(),
+  createdAt: text("created_at").notNull().default(""),
+});
+
+export type AuditLog = typeof auditLogs.$inferSelect;
 
 // Activity feed type (virtual, computed from expenses + settlements)
 export type Activity = {

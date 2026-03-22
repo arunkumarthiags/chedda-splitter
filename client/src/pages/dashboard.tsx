@@ -57,7 +57,7 @@ export default function Dashboard() {
               <path d="M10 11h12M10 16h8M10 21h10" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
               <circle cx="24" cy="21" r="3" fill="currentColor" />
             </svg>
-            <span className="font-bold text-base tracking-tight">SplitTrip</span>
+            <span className="font-bold text-base tracking-tight">CheddaSplit</span>
           </div>
           <div className="flex items-center gap-2">
             <ThemeToggle />

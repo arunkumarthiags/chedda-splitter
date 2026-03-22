@@ -5,75 +5,16 @@ import {
   type Expense, type InsertExpense, expenses,
   type ExpenseSplit, expenseSplits,
   type Settlement, type InsertSettlement, settlements,
+  type AuditLog, auditLogs,
   type Balance, type SimplifiedDebt, type Activity,
 } from "@shared/schema";
-import { drizzle } from "drizzle-orm/better-sqlite3";
-import Database from "better-sqlite3";
-import { eq, and, or, desc, sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/postgres-js";
+import postgres from "postgres";
+import { eq, and, desc } from "drizzle-orm";
 import crypto from "crypto";
 
-const sqlite = new Database("data.db");
-sqlite.pragma("journal_mode = WAL");
-
-export const db = drizzle(sqlite);
-
-// Create tables
-sqlite.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT NOT NULL UNIQUE,
-    password TEXT NOT NULL,
-    display_name TEXT NOT NULL,
-    email TEXT,
-    avatar_color TEXT NOT NULL DEFAULT '#1B9C85'
-  );
-
-  CREATE TABLE IF NOT EXISTS groups (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    description TEXT,
-    category TEXT NOT NULL DEFAULT 'trip',
-    created_by INTEGER NOT NULL REFERENCES users(id),
-    created_at TEXT NOT NULL DEFAULT '',
-    invite_code TEXT NOT NULL UNIQUE
-  );
-
-  CREATE TABLE IF NOT EXISTS group_members (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    group_id INTEGER NOT NULL REFERENCES groups(id),
-    user_id INTEGER NOT NULL REFERENCES users(id),
-    joined_at TEXT NOT NULL DEFAULT ''
-  );
-
-  CREATE TABLE IF NOT EXISTS expenses (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    group_id INTEGER NOT NULL REFERENCES groups(id),
-    description TEXT NOT NULL,
-    amount REAL NOT NULL,
-    paid_by_id INTEGER NOT NULL REFERENCES users(id),
-    category TEXT NOT NULL DEFAULT 'general',
-    split_type TEXT NOT NULL DEFAULT 'equal',
-    created_at TEXT NOT NULL DEFAULT '',
-    notes TEXT
-  );
-
-  CREATE TABLE IF NOT EXISTS expense_splits (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    expense_id INTEGER NOT NULL REFERENCES expenses(id),
-    user_id INTEGER NOT NULL REFERENCES users(id),
-    amount REAL NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS settlements (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    group_id INTEGER NOT NULL REFERENCES groups(id),
-    paid_by_id INTEGER NOT NULL REFERENCES users(id),
-    paid_to_id INTEGER NOT NULL REFERENCES users(id),
-    amount REAL NOT NULL,
-    created_at TEXT NOT NULL DEFAULT '',
-    notes TEXT
-  );
-`);
+const client = postgres(process.env.DATABASE_URL!);
+export const db = drizzle(client);
 
 const AVATAR_COLORS = [
   "#1B9C85", "#E8AA42", "#4A6FA5", "#D35D6E", "#6C5B7B",
@@ -92,8 +33,9 @@ export interface IStorage {
   // Users
   getUser(id: number): Promise<User | undefined>;
   getUserByUsername(username: string): Promise<User | undefined>;
-  createUser(user: InsertUser): Promise<User>;
-  
+  getUserByAuthId(authId: string): Promise<User | undefined>;
+  createUser(user: InsertUser & { authId?: string }): Promise<User>;
+
   // Groups
   createGroup(group: InsertGroup, userId: number): Promise<Group>;
   getGroup(id: number): Promise<Group | undefined>;
@@ -102,188 +44,242 @@ export interface IStorage {
   getGroupMembers(groupId: number): Promise<(GroupMember & { user: User })[]>;
   addGroupMember(groupId: number, userId: number): Promise<GroupMember>;
   isGroupMember(groupId: number, userId: number): Promise<boolean>;
-  
+
   // Expenses
   createExpense(expense: InsertExpense, splits: { userId: number; amount: number }[]): Promise<Expense>;
   getExpense(id: number): Promise<Expense | undefined>;
   getGroupExpenses(groupId: number): Promise<(Expense & { paidBy: User; splits: (ExpenseSplit & { user: User })[] })[]>;
-  deleteExpense(id: number): Promise<void>;
-  
+  deleteExpense(id: number, userId: number): Promise<void>;
+
   // Settlements
   createSettlement(settlement: InsertSettlement): Promise<Settlement>;
   getGroupSettlements(groupId: number): Promise<(Settlement & { paidBy: User; paidTo: User })[]>;
-  
+
   // Balances
   getGroupBalances(groupId: number): Promise<Balance[]>;
   getSimplifiedDebts(groupId: number): Promise<SimplifiedDebt[]>;
   getUserTotalBalance(userId: number): Promise<number>;
-  
+
   // Activity
   getGroupActivity(groupId: number): Promise<Activity[]>;
   getUserActivity(userId: number): Promise<Activity[]>;
+
+  // Audit Logs
+  createAuditLog(groupId: number, userId: number, action: string, details: string): Promise<void>;
+  getGroupAuditLogs(groupId: number): Promise<(AuditLog & { user: { id: number; displayName: string; avatarColor: string } })[]>;
 }
 
 export class DatabaseStorage implements IStorage {
   // Users
   async getUser(id: number): Promise<User | undefined> {
-    return db.select().from(users).where(eq(users.id, id)).get();
+    const rows = await db.select().from(users).where(eq(users.id, id));
+    return rows[0];
   }
 
   async getUserByUsername(username: string): Promise<User | undefined> {
-    return db.select().from(users).where(eq(users.username, username)).get();
+    const rows = await db.select().from(users).where(eq(users.username, username));
+    return rows[0];
   }
 
-  async createUser(insertUser: InsertUser): Promise<User> {
-    return db.insert(users).values({
+  async getUserByAuthId(authId: string): Promise<User | undefined> {
+    const rows = await db.select().from(users).where(eq(users.authId, authId));
+    return rows[0];
+  }
+
+  async createUser(insertUser: InsertUser & { authId?: string }): Promise<User> {
+    const rows = await db.insert(users).values({
       ...insertUser,
       avatarColor: getRandomColor(),
-    }).returning().get();
+    }).returning();
+    return rows[0];
   }
 
   // Groups
   async createGroup(group: InsertGroup, userId: number): Promise<Group> {
     const now = new Date().toISOString();
-    const newGroup = db.insert(groups).values({
+    const newGroupRows = await db.insert(groups).values({
       ...group,
       createdBy: userId,
       createdAt: now,
       inviteCode: generateInviteCode(),
-    }).returning().get();
+    }).returning();
+    const newGroup = newGroupRows[0];
 
     // Add creator as member
-    db.insert(groupMembers).values({
+    await db.insert(groupMembers).values({
       groupId: newGroup.id,
       userId: userId,
       joinedAt: now,
-    }).run();
+    });
+
+    // Audit log
+    const userRows = await db.select().from(users).where(eq(users.id, userId));
+    const actorName = userRows[0]?.displayName ?? "Someone";
+    await this.createAuditLog(newGroup.id, userId, "group_created", `${actorName} created group "${newGroup.name}"`);
 
     return newGroup;
   }
 
   async getGroup(id: number): Promise<Group | undefined> {
-    return db.select().from(groups).where(eq(groups.id, id)).get();
+    const rows = await db.select().from(groups).where(eq(groups.id, id));
+    return rows[0];
   }
 
   async getGroupByInviteCode(code: string): Promise<Group | undefined> {
-    return db.select().from(groups).where(eq(groups.inviteCode, code)).get();
+    const rows = await db.select().from(groups).where(eq(groups.inviteCode, code));
+    return rows[0];
   }
 
   async getUserGroups(userId: number): Promise<Group[]> {
-    const memberRows = db.select().from(groupMembers).where(eq(groupMembers.userId, userId)).all();
+    const memberRows = await db.select().from(groupMembers).where(eq(groupMembers.userId, userId));
     if (memberRows.length === 0) return [];
-    
+
     const groupIds = memberRows.map(m => m.groupId);
     const result: Group[] = [];
     for (const gid of groupIds) {
-      const g = db.select().from(groups).where(eq(groups.id, gid)).get();
-      if (g) result.push(g);
+      const rows = await db.select().from(groups).where(eq(groups.id, gid));
+      if (rows[0]) result.push(rows[0]);
     }
     return result;
   }
 
   async getGroupMembers(groupId: number): Promise<(GroupMember & { user: User })[]> {
-    const members = db.select().from(groupMembers).where(eq(groupMembers.groupId, groupId)).all();
+    const members = await db.select().from(groupMembers).where(eq(groupMembers.groupId, groupId));
     const result: (GroupMember & { user: User })[] = [];
     for (const m of members) {
-      const user = db.select().from(users).where(eq(users.id, m.userId)).get();
-      if (user) {
-        result.push({ ...m, user });
+      const userRows = await db.select().from(users).where(eq(users.id, m.userId));
+      if (userRows[0]) {
+        result.push({ ...m, user: userRows[0] });
       }
     }
     return result;
   }
 
   async addGroupMember(groupId: number, userId: number): Promise<GroupMember> {
-    return db.insert(groupMembers).values({
+    const rows = await db.insert(groupMembers).values({
       groupId,
       userId,
       joinedAt: new Date().toISOString(),
-    }).returning().get();
+    }).returning();
+
+    // Audit log
+    const userRows = await db.select().from(users).where(eq(users.id, userId));
+    const actorName = userRows[0]?.displayName ?? "Someone";
+    await this.createAuditLog(groupId, userId, "member_joined", `${actorName} joined the group`);
+
+    return rows[0];
   }
 
   async isGroupMember(groupId: number, userId: number): Promise<boolean> {
-    const member = db.select().from(groupMembers)
-      .where(and(eq(groupMembers.groupId, groupId), eq(groupMembers.userId, userId)))
-      .get();
-    return !!member;
+    const rows = await db.select().from(groupMembers)
+      .where(and(eq(groupMembers.groupId, groupId), eq(groupMembers.userId, userId)));
+    return rows.length > 0;
   }
 
   // Expenses
   async createExpense(expense: InsertExpense, splits: { userId: number; amount: number }[]): Promise<Expense> {
     const now = new Date().toISOString();
-    const newExpense = db.insert(expenses).values({
+    const expenseRows = await db.insert(expenses).values({
       ...expense,
       createdAt: now,
-    }).returning().get();
+    }).returning();
+    const newExpense = expenseRows[0];
 
     for (const split of splits) {
-      db.insert(expenseSplits).values({
+      await db.insert(expenseSplits).values({
         expenseId: newExpense.id,
         userId: split.userId,
-        amount: split.amount,
-      }).run();
+        amount: String(split.amount),
+      });
     }
+
+    // Audit log
+    const userRows = await db.select().from(users).where(eq(users.id, newExpense.paidById));
+    const actorName = userRows[0]?.displayName ?? "Someone";
+    const amt = parseFloat(newExpense.amount as string).toFixed(2);
+    await this.createAuditLog(newExpense.groupId, newExpense.paidById, "expense_created", `${actorName} added "${newExpense.description}" ($${amt})`);
 
     return newExpense;
   }
 
   async getExpense(id: number): Promise<Expense | undefined> {
-    return db.select().from(expenses).where(eq(expenses.id, id)).get();
+    const rows = await db.select().from(expenses).where(eq(expenses.id, id));
+    return rows[0];
   }
 
   async getGroupExpenses(groupId: number): Promise<(Expense & { paidBy: User; splits: (ExpenseSplit & { user: User })[] })[]> {
-    const expenseRows = db.select().from(expenses)
+    const expenseRows = await db.select().from(expenses)
       .where(eq(expenses.groupId, groupId))
-      .orderBy(desc(expenses.createdAt))
-      .all();
+      .orderBy(desc(expenses.createdAt));
 
     const result: (Expense & { paidBy: User; splits: (ExpenseSplit & { user: User })[] })[] = [];
 
     for (const exp of expenseRows) {
-      const paidBy = db.select().from(users).where(eq(users.id, exp.paidById)).get();
-      if (!paidBy) continue;
+      const paidByRows = await db.select().from(users).where(eq(users.id, exp.paidById));
+      if (!paidByRows[0]) continue;
 
-      const splitRows = db.select().from(expenseSplits).where(eq(expenseSplits.expenseId, exp.id)).all();
+      const splitRows = await db.select().from(expenseSplits).where(eq(expenseSplits.expenseId, exp.id));
       const splitsWithUser: (ExpenseSplit & { user: User })[] = [];
-      
+
       for (const s of splitRows) {
-        const user = db.select().from(users).where(eq(users.id, s.userId)).get();
-        if (user) {
-          splitsWithUser.push({ ...s, user });
+        const userRows = await db.select().from(users).where(eq(users.id, s.userId));
+        if (userRows[0]) {
+          splitsWithUser.push({ ...s, user: userRows[0] });
         }
       }
 
-      result.push({ ...exp, paidBy, splits: splitsWithUser });
+      result.push({ ...exp, paidBy: paidByRows[0], splits: splitsWithUser });
     }
 
     return result;
   }
 
-  async deleteExpense(id: number): Promise<void> {
-    db.delete(expenseSplits).where(eq(expenseSplits.expenseId, id)).run();
-    db.delete(expenses).where(eq(expenses.id, id)).run();
+  async deleteExpense(id: number, userId: number): Promise<void> {
+    const expRows = await db.select().from(expenses).where(eq(expenses.id, id));
+    const exp = expRows[0];
+
+    await db.delete(expenseSplits).where(eq(expenseSplits.expenseId, id));
+    await db.delete(expenses).where(eq(expenses.id, id));
+
+    // Audit log (fire-and-forget if expense already missing)
+    if (exp) {
+      const userRows = await db.select().from(users).where(eq(users.id, userId));
+      const actorName = userRows[0]?.displayName ?? "Someone";
+      const amt = parseFloat(exp.amount as string).toFixed(2);
+      await this.createAuditLog(exp.groupId, userId, "expense_deleted", `${actorName} deleted "${exp.description}" ($${amt})`);
+    }
   }
 
   // Settlements
   async createSettlement(settlement: InsertSettlement): Promise<Settlement> {
-    return db.insert(settlements).values({
+    const rows = await db.insert(settlements).values({
       ...settlement,
       createdAt: new Date().toISOString(),
-    }).returning().get();
+    }).returning();
+    const newSettlement = rows[0];
+
+    // Audit log
+    const paidByRows = await db.select().from(users).where(eq(users.id, newSettlement.paidById));
+    const paidToRows = await db.select().from(users).where(eq(users.id, newSettlement.paidToId));
+    const paidByName = paidByRows[0]?.displayName ?? "Someone";
+    const paidToName = paidToRows[0]?.displayName ?? "someone";
+    const amt = parseFloat(newSettlement.amount as string).toFixed(2);
+    await this.createAuditLog(newSettlement.groupId, newSettlement.paidById, "settlement_created", `${paidByName} paid $${amt} to ${paidToName}`);
+
+    return newSettlement;
   }
 
   async getGroupSettlements(groupId: number): Promise<(Settlement & { paidBy: User; paidTo: User })[]> {
-    const rows = db.select().from(settlements)
+    const rows = await db.select().from(settlements)
       .where(eq(settlements.groupId, groupId))
-      .orderBy(desc(settlements.createdAt))
-      .all();
+      .orderBy(desc(settlements.createdAt));
 
     const result: (Settlement & { paidBy: User; paidTo: User })[] = [];
     for (const s of rows) {
-      const paidBy = db.select().from(users).where(eq(users.id, s.paidById)).get();
-      const paidTo = db.select().from(users).where(eq(users.id, s.paidToId)).get();
-      if (paidBy && paidTo) {
-        result.push({ ...s, paidBy, paidTo });
+      const paidByRows = await db.select().from(users).where(eq(users.id, s.paidById));
+      const paidToRows = await db.select().from(users).where(eq(users.id, s.paidToId));
+      if (paidByRows[0] && paidToRows[0]) {
+        result.push({ ...s, paidBy: paidByRows[0], paidTo: paidToRows[0] });
       }
     }
     return result;
@@ -293,42 +289,44 @@ export class DatabaseStorage implements IStorage {
   async getGroupBalances(groupId: number): Promise<Balance[]> {
     const members = await this.getGroupMembers(groupId);
     const balanceMap: Record<number, number> = {};
-    
+
     for (const m of members) {
       balanceMap[m.userId] = 0;
     }
 
     // Get all expenses for the group
-    const expenseRows = db.select().from(expenses)
-      .where(eq(expenses.groupId, groupId)).all();
+    const expenseRows = await db.select().from(expenses)
+      .where(eq(expenses.groupId, groupId));
 
     for (const exp of expenseRows) {
+      const expAmount = parseFloat(exp.amount as string);
       // Person who paid gets credit
       if (balanceMap[exp.paidById] !== undefined) {
-        balanceMap[exp.paidById] += exp.amount;
+        balanceMap[exp.paidById] += expAmount;
       }
 
       // Each person's split is a debit
-      const splitRows = db.select().from(expenseSplits)
-        .where(eq(expenseSplits.expenseId, exp.id)).all();
-      
+      const splitRows = await db.select().from(expenseSplits)
+        .where(eq(expenseSplits.expenseId, exp.id));
+
       for (const s of splitRows) {
         if (balanceMap[s.userId] !== undefined) {
-          balanceMap[s.userId] -= s.amount;
+          balanceMap[s.userId] -= parseFloat(s.amount as string);
         }
       }
     }
 
     // Get all settlements
-    const settlementRows = db.select().from(settlements)
-      .where(eq(settlements.groupId, groupId)).all();
+    const settlementRows = await db.select().from(settlements)
+      .where(eq(settlements.groupId, groupId));
 
     for (const s of settlementRows) {
+      const sAmount = parseFloat(s.amount as string);
       if (balanceMap[s.paidById] !== undefined) {
-        balanceMap[s.paidById] += s.amount;
+        balanceMap[s.paidById] += sAmount;
       }
       if (balanceMap[s.paidToId] !== undefined) {
-        balanceMap[s.paidToId] -= s.amount;
+        balanceMap[s.paidToId] -= sAmount;
       }
     }
 
@@ -342,7 +340,7 @@ export class DatabaseStorage implements IStorage {
 
   async getSimplifiedDebts(groupId: number): Promise<SimplifiedDebt[]> {
     const balances = await this.getGroupBalances(groupId);
-    
+
     // Separate into debtors (negative balance = owes) and creditors (positive balance = owed)
     const debtors: { userId: number; displayName: string; avatarColor: string; amount: number }[] = [];
     const creditors: { userId: number; displayName: string; avatarColor: string; amount: number }[] = [];
@@ -406,47 +404,47 @@ export class DatabaseStorage implements IStorage {
 
     const activities: Activity[] = [];
 
-    const expenseRows = db.select().from(expenses)
+    const expenseRows = await db.select().from(expenses)
       .where(eq(expenses.groupId, groupId))
-      .orderBy(desc(expenses.createdAt))
-      .all();
+      .orderBy(desc(expenses.createdAt));
 
     for (const exp of expenseRows) {
-      const user = db.select().from(users).where(eq(users.id, exp.paidById)).get();
-      if (user) {
+      const userRows = await db.select().from(users).where(eq(users.id, exp.paidById));
+      if (userRows[0]) {
+        const expAmount = parseFloat(exp.amount as string);
         activities.push({
           id: exp.id,
           type: "expense",
           description: exp.description,
-          amount: exp.amount,
+          amount: expAmount,
           createdAt: exp.createdAt,
-          user: { id: user.id, displayName: user.displayName, avatarColor: user.avatarColor },
+          user: { id: userRows[0].id, displayName: userRows[0].displayName, avatarColor: userRows[0].avatarColor },
           groupName: group.name,
           groupId: group.id,
-          details: `paid $${exp.amount.toFixed(2)} for ${exp.description}`,
+          details: `paid $${expAmount.toFixed(2)} for ${exp.description}`,
         });
       }
     }
 
-    const settlementRows = db.select().from(settlements)
+    const settlementRows = await db.select().from(settlements)
       .where(eq(settlements.groupId, groupId))
-      .orderBy(desc(settlements.createdAt))
-      .all();
+      .orderBy(desc(settlements.createdAt));
 
     for (const s of settlementRows) {
-      const paidBy = db.select().from(users).where(eq(users.id, s.paidById)).get();
-      const paidTo = db.select().from(users).where(eq(users.id, s.paidToId)).get();
-      if (paidBy && paidTo) {
+      const paidByRows = await db.select().from(users).where(eq(users.id, s.paidById));
+      const paidToRows = await db.select().from(users).where(eq(users.id, s.paidToId));
+      if (paidByRows[0] && paidToRows[0]) {
+        const sAmount = parseFloat(s.amount as string);
         activities.push({
           id: s.id + 100000,
           type: "settlement",
-          description: `${paidBy.displayName} paid ${paidTo.displayName}`,
-          amount: s.amount,
+          description: `${paidByRows[0].displayName} paid ${paidToRows[0].displayName}`,
+          amount: sAmount,
           createdAt: s.createdAt,
-          user: { id: paidBy.id, displayName: paidBy.displayName, avatarColor: paidBy.avatarColor },
+          user: { id: paidByRows[0].id, displayName: paidByRows[0].displayName, avatarColor: paidByRows[0].avatarColor },
           groupName: group.name,
           groupId: group.id,
-          details: `settled $${s.amount.toFixed(2)}`,
+          details: `settled $${sAmount.toFixed(2)}`,
         });
       }
     }
@@ -466,6 +464,35 @@ export class DatabaseStorage implements IStorage {
 
     allActivities.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     return allActivities.slice(0, 50);
+  }
+
+  // Audit Logs
+  async createAuditLog(groupId: number, userId: number, action: string, details: string): Promise<void> {
+    await db.insert(auditLogs).values({
+      groupId,
+      userId,
+      action,
+      details,
+      createdAt: new Date().toISOString(),
+    });
+  }
+
+  async getGroupAuditLogs(groupId: number): Promise<(AuditLog & { user: { id: number; displayName: string; avatarColor: string } })[]> {
+    const rows = await db.select().from(auditLogs)
+      .where(eq(auditLogs.groupId, groupId))
+      .orderBy(desc(auditLogs.createdAt));
+
+    const result: (AuditLog & { user: { id: number; displayName: string; avatarColor: string } })[] = [];
+    for (const row of rows) {
+      const userRows = await db.select().from(users).where(eq(users.id, row.userId));
+      if (userRows[0]) {
+        result.push({
+          ...row,
+          user: { id: userRows[0].id, displayName: userRows[0].displayName, avatarColor: userRows[0].avatarColor },
+        });
+      }
+    }
+    return result;
   }
 }
 
