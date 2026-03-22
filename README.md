@@ -36,8 +36,9 @@ CheddaSplit is a full-stack web app for tracking shared expenses across group tr
 - Quick overview: total owed to you, total you owe, your groups
 
 **Auth**
-- Username/password registration and login
+- Username + email + password registration
 - JWT-based sessions (token stored in localStorage)
+- Forgot password / email reset flow
 - Sessions persist across page refreshes and deployments (data lives in Supabase)
 
 **UI**
@@ -170,11 +171,9 @@ ALTER TABLE public.settlements    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.audit_logs     ENABLE ROW LEVEL SECURITY;
 ```
 
-### 3. Disable email confirmation
+### 3. Configure Supabase redirect URLs
 
-Supabase dashboard → **Authentication** → **Settings** → turn off **Enable email confirmations**.
-
-_(The app uses synthetic internal emails like `username@splittrip.internal` so confirmation emails are not applicable.)_
+Supabase dashboard → **Authentication** → **URL Configuration** → add your app's public URL to **Redirect URLs** (required for password reset emails to work).
 
 ### 4. Configure environment variables
 
@@ -191,11 +190,11 @@ SUPABASE_URL=https://xxxxxxxxxxxxxxxxxxxx.supabase.co
 # Service role secret key  (Project Settings → API → service_role)
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key-here
 
-# Anon/public key  (Project Settings → API → anon public)
-SUPABASE_ANON_KEY=your-anon-key-here
+# Postgres Transaction pooler URL  (Supabase → Connect → Transaction pooler)
+DATABASE_URL=postgresql://postgres.[ref]:[password]@aws-0-[region].pooler.supabase.com:6543/postgres
 
-# Postgres connection string  (Project Settings → Database → URI)
-DATABASE_URL=postgresql://postgres:[password]@db.[ref].supabase.co:5432/postgres
+# Public URL of your deployed app (used for password reset redirect links)
+APP_URL=https://your-app.up.railway.app
 ```
 
 ### 5. Run in development
@@ -227,7 +226,10 @@ All routes require `Authorization: Bearer <token>` except auth endpoints.
 |---|---|---|
 | POST | `/api/auth/register` | Create account |
 | POST | `/api/auth/login` | Sign in |
+| POST | `/api/auth/logout` | Sign out (invalidates token) |
 | GET | `/api/auth/me` | Get current user |
+| POST | `/api/auth/forgot-password` | Send password reset email |
+| POST | `/api/auth/reset-password` | Set new password via reset token |
 | GET | `/api/groups` | List user's groups |
 | POST | `/api/groups` | Create a group |
 | POST | `/api/groups/join` | Join via invite code |
