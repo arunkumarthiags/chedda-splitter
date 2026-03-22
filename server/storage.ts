@@ -13,7 +13,9 @@ import postgres from "postgres";
 import { eq, and, desc } from "drizzle-orm";
 import crypto from "crypto";
 
-const client = postgres(process.env.DATABASE_URL!);
+const client = postgres(process.env.DATABASE_URL!, {
+  ssl: process.env.NODE_ENV === "production" ? "require" : false,
+});
 export const db = drizzle(client);
 
 const AVATAR_COLORS = [
