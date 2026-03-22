@@ -81,24 +81,38 @@ export async function registerRoutes(
         return res.status(400).json({ message: "Username already taken" });
       }
 
-      const { data: authData, error: createError } = await supabase.auth.admin.createUser({
-        email,
-        password,
-        email_confirm: true,
-      });
+      let authData, createError;
+      try {
+        ({ data: authData, error: createError } = await supabase.auth.admin.createUser({
+          email,
+          password,
+          email_confirm: true,
+        }));
+      } catch (err: any) {
+        console.error("Supabase admin.createUser threw:", err);
+        return res.status(500).json({ message: "Could not reach authentication service. Please try again." });
+      }
 
-      if (createError || !authData.user) {
+      if (createError || !authData?.user) {
         console.error("Supabase createUser error:", createError);
         return res.status(400).json({ message: createError?.message || "Failed to create account" });
       }
 
-      const user = await storage.createUser({
-        username,
-        password: "",
-        displayName,
-        email,
-        authId: authData.user.id,
-      });
+      let user;
+      try {
+        user = await storage.createUser({
+          username,
+          password: "",
+          displayName,
+          email,
+          authId: authData.user.id,
+        });
+      } catch (err: any) {
+        console.error("DB createUser error:", err);
+        // Clean up the Supabase user since the DB insert failed
+        await supabase.auth.admin.deleteUser(authData.user.id).catch(() => {});
+        return res.status(500).json({ message: "Failed to save account. Please try again." });
+      }
 
       const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
         email,
@@ -107,12 +121,12 @@ export async function registerRoutes(
 
       if (signInError || !signInData.session) {
         console.error("Supabase signIn after register error:", signInError);
-        return res.status(500).json({ message: "Registration succeeded but login failed" });
+        return res.status(500).json({ message: "Account created — please sign in manually." });
       }
 
       return res.json({ ...toSafeUser(user), token: signInData.session.access_token });
     } catch (err: any) {
-      console.error("Register error:", err);
+      console.error("Register unexpected error:", err);
       return res.status(500).json({ message: "Something went wrong" });
     }
   });
@@ -168,11 +182,18 @@ export async function registerRoutes(
       if (!email) {
         return res.status(400).json({ message: "Email is required" });
       }
-      const appUrl = process.env.APP_URL || "http://localhost:5000";
-      // Always return 200 — don't reveal whether the email exists
-      await supabase.auth.resetPasswordForEmail(email, {
+      const appUrl = process.env.APP_URL;
+      if (!appUrl) {
+        console.error("APP_URL env var is not set — password reset emails will not work");
+        return res.status(500).json({ message: "Password reset is not configured. Contact the app administrator." });
+      }
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
         redirectTo: appUrl,
       });
+      if (error) {
+        console.error("Supabase resetPasswordForEmail error:", error);
+      }
+      // Always return 200 — don't reveal whether the email exists
       return res.json({ message: "If an account with that email exists, a reset link has been sent" });
     } catch (err: any) {
       console.error("Forgot password error:", err);
