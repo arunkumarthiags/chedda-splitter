@@ -22,7 +22,7 @@ const AVATAR_COLORS = [
 ];
 
 function generateInviteCode(): string {
-  return crypto.randomBytes(4).toString("hex").toUpperCase();
+  return crypto.randomBytes(6).toString("hex").toUpperCase();
 }
 
 function getRandomColor(): string {
@@ -34,6 +34,7 @@ export interface IStorage {
   getUser(id: number): Promise<User | undefined>;
   getUserByUsername(username: string): Promise<User | undefined>;
   getUserByAuthId(authId: string): Promise<User | undefined>;
+  getUserByEmail(email: string): Promise<User | undefined>;
   createUser(user: InsertUser & { authId?: string }): Promise<User>;
 
   // Groups
@@ -83,6 +84,11 @@ export class DatabaseStorage implements IStorage {
 
   async getUserByAuthId(authId: string): Promise<User | undefined> {
     const rows = await db.select().from(users).where(eq(users.authId, authId));
+    return rows[0];
+  }
+
+  async getUserByEmail(email: string): Promise<User | undefined> {
+    const rows = await db.select().from(users).where(eq(users.email, email));
     return rows[0];
   }
 

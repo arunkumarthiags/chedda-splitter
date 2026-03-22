@@ -1,8 +1,17 @@
 import "dotenv/config";
 import express, { type Request, Response, NextFunction } from "express";
+import helmet from "helmet";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
+
+// Validate required environment variables at startup
+const requiredEnvVars = ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "DATABASE_URL"];
+for (const key of requiredEnvVars) {
+  if (!process.env[key]) {
+    throw new Error(`Missing required environment variable: ${key}`);
+  }
+}
 
 const app = express();
 const httpServer = createServer(app);
@@ -13,15 +22,18 @@ declare module "http" {
   }
 }
 
+app.use(helmet());
+
 app.use(
   express.json({
+    limit: "10kb",
     verify: (req, _res, buf) => {
       req.rawBody = buf;
     },
   }),
 );
 
-app.use(express.urlencoded({ extended: false }));
+app.use(express.urlencoded({ limit: "10kb", extended: false }));
 
 export function log(message: string, source = "express") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {
@@ -65,7 +77,6 @@ app.use((req, res, next) => {
 
   app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
-    const message = err.message || "Internal Server Error";
 
     console.error("Internal Server Error:", err);
 
@@ -73,6 +84,7 @@ app.use((req, res, next) => {
       return next(err);
     }
 
+    const message = status < 500 ? (err.message || "Bad request") : "Internal server error";
     return res.status(status).json({ message });
   });
 

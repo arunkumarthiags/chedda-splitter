@@ -16,8 +16,10 @@ type AuthContextType = {
   user: User | null;
   isLoading: boolean;
   login: (username: string, password: string) => Promise<void>;
-  register: (username: string, password: string, displayName: string) => Promise<void>;
+  register: (username: string, password: string, displayName: string, email: string) => Promise<void>;
   logout: () => Promise<void>;
+  forgotPassword: (email: string) => Promise<string>;
+  resetPassword: (token: string, newPassword: string) => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -52,8 +54,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     queryClient.clear();
   }, []);
 
-  const register = useCallback(async (username: string, password: string, displayName: string) => {
-    const res = await apiRequest("POST", "/api/auth/register", { username, password, displayName });
+  const register = useCallback(async (username: string, password: string, displayName: string, email: string) => {
+    const res = await apiRequest("POST", "/api/auth/register", { username, password, displayName, email });
     const u = await res.json();
     const { token, ...userData } = u;
     localStorage.setItem(TOKEN_KEY, token);
@@ -70,8 +72,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     queryClient.clear();
   }, []);
 
+  const forgotPassword = useCallback(async (email: string): Promise<string> => {
+    const res = await apiRequest("POST", "/api/auth/forgot-password", { email });
+    const data = await res.json();
+    return data.message;
+  }, []);
+
+  const resetPassword = useCallback(async (token: string, newPassword: string): Promise<void> => {
+    const res = await apiRequest("POST", "/api/auth/reset-password", { token, newPassword });
+    if (!res.ok) {
+      const data = await res.json();
+      throw new Error(data.message || "Failed to reset password");
+    }
+  }, []);
+
   return (
-    <AuthContext.Provider value={{ user, isLoading, login, register, logout }}>
+    <AuthContext.Provider value={{ user, isLoading, login, register, logout, forgotPassword, resetPassword }}>
       {children}
     </AuthContext.Provider>
   );
