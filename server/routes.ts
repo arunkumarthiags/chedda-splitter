@@ -182,7 +182,7 @@ export async function registerRoutes(
       if (!email) {
         return res.status(400).json({ message: "Email is required" });
       }
-      const appUrl = process.env.APP_URL;
+      const appUrl = process.env.APP_URL?.replace(/\/$/, "");
       if (!appUrl) {
         console.error("APP_URL env var is not set — password reset emails will not work");
         return res.status(500).json({ message: "Password reset is not configured. Contact the app administrator." });
