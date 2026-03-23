@@ -46,17 +46,21 @@ export interface IStorage {
   getUserGroups(userId: number): Promise<Group[]>;
   getGroupMembers(groupId: number): Promise<(GroupMember & { user: User })[]>;
   addGroupMember(groupId: number, userId: number): Promise<GroupMember>;
+  removeGroupMember(groupId: number, userId: number, action: "left" | "removed", actorId: number): Promise<void>;
   isGroupMember(groupId: number, userId: number): Promise<boolean>;
 
   // Expenses
   createExpense(expense: InsertExpense, splits: { userId: number; amount: number }[]): Promise<Expense>;
   getExpense(id: number): Promise<Expense | undefined>;
   getGroupExpenses(groupId: number): Promise<(Expense & { paidBy: User; splits: (ExpenseSplit & { user: User })[] })[]>;
+  updateExpense(id: number, userId: number, data: { description: string; amount: number; paidById: number; category: string; splitType: string; notes?: string }, splits: { userId: number; amount: number }[]): Promise<Expense>;
   deleteExpense(id: number, userId: number): Promise<void>;
 
   // Settlements
   createSettlement(settlement: InsertSettlement): Promise<Settlement>;
+  getSettlement(id: number): Promise<Settlement | undefined>;
   getGroupSettlements(groupId: number): Promise<(Settlement & { paidBy: User; paidTo: User })[]>;
+  deleteSettlement(id: number, groupId: number, userId: number): Promise<void>;
 
   // Balances
   getGroupBalances(groupId: number): Promise<Balance[]>;
@@ -184,6 +188,19 @@ export class DatabaseStorage implements IStorage {
     return rows.length > 0;
   }
 
+  async removeGroupMember(groupId: number, userId: number, action: "left" | "removed", actorId: number): Promise<void> {
+    const targetRows = await db.select().from(users).where(eq(users.id, userId));
+    const targetName = targetRows[0]?.displayName ?? "Someone";
+
+    await db.delete(groupMembers)
+      .where(and(eq(groupMembers.groupId, groupId), eq(groupMembers.userId, userId)));
+
+    const details = action === "left"
+      ? `${targetName} left the group`
+      : `${targetName} was removed from the group`;
+    await this.createAuditLog(groupId, actorId, action === "left" ? "member_left" : "member_removed", details);
+  }
+
   // Expenses
   async createExpense(expense: InsertExpense, splits: { userId: number; amount: number }[]): Promise<Expense> {
     const now = new Date().toISOString();
@@ -258,6 +275,36 @@ export class DatabaseStorage implements IStorage {
     }
   }
 
+  async updateExpense(id: number, userId: number, data: { description: string; amount: number; paidById: number; category: string; splitType: string; notes?: string }, splits: { userId: number; amount: number }[]): Promise<Expense> {
+    await db.update(expenses).set({
+      description: data.description,
+      amount: String(data.amount),
+      paidById: data.paidById,
+      category: data.category,
+      splitType: data.splitType,
+      notes: data.notes ?? null,
+    }).where(eq(expenses.id, id));
+
+    await db.delete(expenseSplits).where(eq(expenseSplits.expenseId, id));
+    for (const split of splits) {
+      await db.insert(expenseSplits).values({
+        expenseId: id,
+        userId: split.userId,
+        amount: String(split.amount),
+      });
+    }
+
+    const updatedRows = await db.select().from(expenses).where(eq(expenses.id, id));
+    const updated = updatedRows[0];
+
+    const userRows = await db.select().from(users).where(eq(users.id, userId));
+    const actorName = userRows[0]?.displayName ?? "Someone";
+    const amt = parseFloat(updated.amount as string).toFixed(2);
+    await this.createAuditLog(updated.groupId, userId, "expense_updated", `${actorName} updated "${updated.description}" ($${amt})`);
+
+    return updated;
+  }
+
   // Settlements
   async createSettlement(settlement: InsertSettlement): Promise<Settlement> {
     const rows = await db.insert(settlements).values({
@@ -277,6 +324,11 @@ export class DatabaseStorage implements IStorage {
     return newSettlement;
   }
 
+  async getSettlement(id: number): Promise<Settlement | undefined> {
+    const rows = await db.select().from(settlements).where(eq(settlements.id, id));
+    return rows[0];
+  }
+
   async getGroupSettlements(groupId: number): Promise<(Settlement & { paidBy: User; paidTo: User })[]> {
     const rows = await db.select().from(settlements)
       .where(eq(settlements.groupId, groupId))
@@ -291,6 +343,20 @@ export class DatabaseStorage implements IStorage {
       }
     }
     return result;
+  }
+
+  async deleteSettlement(id: number, groupId: number, userId: number): Promise<void> {
+    const sRows = await db.select().from(settlements).where(eq(settlements.id, id));
+    const s = sRows[0];
+
+    await db.delete(settlements).where(eq(settlements.id, id));
+
+    if (s) {
+      const userRows = await db.select().from(users).where(eq(users.id, userId));
+      const actorName = userRows[0]?.displayName ?? "Someone";
+      const amt = parseFloat(s.amount as string).toFixed(2);
+      await this.createAuditLog(groupId, userId, "settlement_deleted", `${actorName} deleted a $${amt} settlement`);
+    }
   }
 
   // Balances

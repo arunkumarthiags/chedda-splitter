@@ -27,6 +27,7 @@ export function SettleUpDialog({ open, onOpenChange, groupId, members, currentUs
   const [paidById, setPaidById] = useState(currentUserId.toString());
   const [paidToId, setPaidToId] = useState("");
   const [amount, setAmount] = useState("");
+  const [amountAutoFilled, setAmountAutoFilled] = useState(false);
   const [notes, setNotes] = useState("");
   const [loading, setLoading] = useState(false);
   const { toast } = useToast();
@@ -36,6 +37,7 @@ export function SettleUpDialog({ open, onOpenChange, groupId, members, currentUs
       setPaidById(currentUserId.toString());
       setPaidToId("");
       setAmount("");
+      setAmountAutoFilled(false);
       setNotes("");
     }
   }, [open, currentUserId]);
@@ -45,6 +47,7 @@ export function SettleUpDialog({ open, onOpenChange, groupId, members, currentUs
     setPaidById(debt.fromUserId.toString());
     setPaidToId(debt.toUserId.toString());
     setAmount(debt.amount.toFixed(2));
+    setAmountAutoFilled(true);
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -139,9 +142,22 @@ export function SettleUpDialog({ open, onOpenChange, groupId, members, currentUs
             </div>
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-1">
             <Label htmlFor="settle-amount">Amount ($)</Label>
-            <Input id="settle-amount" data-testid="input-settle-amount" type="number" step="0.01" min="0.01" placeholder="0.00" value={amount} onChange={e => setAmount(e.target.value)} required />
+            <Input
+              id="settle-amount"
+              data-testid="input-settle-amount"
+              type="number"
+              step="0.01"
+              min="0.01"
+              placeholder="0.00"
+              value={amount}
+              onChange={e => { setAmount(e.target.value); setAmountAutoFilled(false); }}
+              required
+            />
+            {amountAutoFilled && (
+              <p className="text-xs text-muted-foreground">Suggested amount — edit to pay partially</p>
+            )}
           </div>
 
           <div className="space-y-2">

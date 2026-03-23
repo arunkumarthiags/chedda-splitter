@@ -10,10 +10,15 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { UserAvatar } from "@/components/UserAvatar";
 import { CreateGroupDialog } from "@/components/CreateGroupDialog";
 import { JoinGroupDialog } from "@/components/JoinGroupDialog";
+import { ChangePasswordDialog } from "@/components/ChangePasswordDialog";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { PerplexityAttribution } from "@/components/PerplexityAttribution";
 import {
-  Plus, UserPlus, LogOut, Users, TrendingUp, TrendingDown,
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem,
+  DropdownMenuSeparator, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Plus, UserPlus, LogOut, KeyRound, Users, TrendingUp, TrendingDown,
   Wallet, ChevronRight, Receipt, Plane, Home, Heart, MoreHorizontal,
 } from "lucide-react";
 
@@ -28,6 +33,7 @@ export default function Dashboard() {
   const { user, logout } = useAuth();
   const [createOpen, setCreateOpen] = useState(false);
   const [joinOpen, setJoinOpen] = useState(false);
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false);
 
   const { data: groups, isLoading: groupsLoading } = useQuery<any[]>({
     queryKey: ["/api/groups"],
@@ -61,13 +67,27 @@ export default function Dashboard() {
           </div>
           <div className="flex items-center gap-2">
             <ThemeToggle />
-            <div className="flex items-center gap-2 pl-2 border-l">
-              <UserAvatar name={user?.displayName || "U"} color={user?.avatarColor || "#1B9C85"} size="sm" />
-              <span className="text-sm font-medium hidden sm:inline">{user?.displayName}</span>
+            <div className="pl-2 border-l">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button className="flex items-center gap-2 rounded-md px-2 py-1 hover:bg-muted transition-colors" data-testid="button-user-menu">
+                    <UserAvatar name={user?.displayName || "U"} color={user?.avatarColor || "#1B9C85"} size="sm" />
+                    <span className="text-sm font-medium hidden sm:inline">{user?.displayName}</span>
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-44">
+                  <DropdownMenuItem onClick={() => setChangePasswordOpen(true)} data-testid="menu-item-change-password">
+                    <KeyRound className="w-4 h-4 mr-2" />
+                    Change Password
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={logout} data-testid="button-logout" className="text-destructive focus:text-destructive">
+                    <LogOut className="w-4 h-4 mr-2" />
+                    Log out
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
-            <Button variant="ghost" size="icon" onClick={logout} data-testid="button-logout">
-              <LogOut className="w-4 h-4" />
-            </Button>
           </div>
         </div>
       </header>
@@ -233,6 +253,7 @@ export default function Dashboard() {
 
       <CreateGroupDialog open={createOpen} onOpenChange={setCreateOpen} />
       <JoinGroupDialog open={joinOpen} onOpenChange={setJoinOpen} />
+      <ChangePasswordDialog open={changePasswordOpen} onOpenChange={setChangePasswordOpen} />
     </div>
   );
 }

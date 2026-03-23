@@ -236,6 +236,45 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/auth/change-password", requireAuth, async (req, res) => {
+    try {
+      const user = req.user!;
+      const { currentPassword, newPassword } = req.body;
+      if (!currentPassword || !newPassword) {
+        return res.status(400).json({ message: "Current and new password are required" });
+      }
+      if (newPassword.length < 8) {
+        return res.status(400).json({ message: "New password must be at least 8 characters" });
+      }
+      if (!user.email) {
+        return res.status(400).json({ message: "No email associated with this account" });
+      }
+
+      // Verify current password
+      const { error: signInError } = await supabase.auth.signInWithPassword({
+        email: user.email,
+        password: currentPassword,
+      });
+      if (signInError) {
+        return res.status(401).json({ message: "Current password is incorrect" });
+      }
+
+      const { error: updateError } = await supabase.auth.admin.updateUserById(
+        user.authId!,
+        { password: newPassword }
+      );
+      if (updateError) {
+        console.error("Change password update error:", updateError);
+        return res.status(500).json({ message: "Failed to update password" });
+      }
+
+      return res.json({ message: "Password updated successfully" });
+    } catch (err: any) {
+      console.error("Change password error:", err);
+      return res.status(500).json({ message: "Something went wrong" });
+    }
+  });
+
   // === GROUP ROUTES ===
   app.post("/api/groups", requireAuth, async (req, res) => {
     try {
@@ -307,6 +346,43 @@ export async function registerRoutes(
       return res.json(group);
     } catch (err: any) {
       console.error("Join group error:", err);
+      return res.status(500).json({ message: "Something went wrong" });
+    }
+  });
+
+  app.post("/api/groups/:id/leave", requireAuth, async (req, res) => {
+    try {
+      const user = req.user!;
+      const groupId = parseInt(req.params.id as string);
+      const isMember = await storage.isGroupMember(groupId, user.id);
+      if (!isMember) return res.status(403).json({ message: "Not a member of this group" });
+
+      await storage.removeGroupMember(groupId, user.id, "left", user.id);
+      return res.json({ message: "Left group" });
+    } catch (err: any) {
+      console.error("Leave group error:", err);
+      return res.status(500).json({ message: "Something went wrong" });
+    }
+  });
+
+  app.delete("/api/groups/:id/members/:userId", requireAuth, async (req, res) => {
+    try {
+      const actor = req.user!;
+      const groupId = parseInt(req.params.id as string);
+      const targetUserId = parseInt(req.params.userId as string);
+
+      const group = await storage.getGroup(groupId);
+      if (!group) return res.status(404).json({ message: "Group not found" });
+      if (group.createdBy !== actor.id) return res.status(403).json({ message: "Only the group creator can remove members" });
+      if (targetUserId === actor.id) return res.status(400).json({ message: "Use the leave endpoint to leave the group yourself" });
+
+      const isMember = await storage.isGroupMember(groupId, targetUserId);
+      if (!isMember) return res.status(404).json({ message: "User is not a member of this group" });
+
+      await storage.removeGroupMember(groupId, targetUserId, "removed", actor.id);
+      return res.json({ message: "Member removed" });
+    } catch (err: any) {
+      console.error("Remove member error:", err);
       return res.status(500).json({ message: "Something went wrong" });
     }
   });
@@ -383,6 +459,41 @@ export async function registerRoutes(
     }
   });
 
+  app.patch("/api/expenses/:id", requireAuth, async (req, res) => {
+    try {
+      const user = req.user!;
+      const id = parseInt(req.params.id as string);
+
+      const expense = await storage.getExpense(id);
+      if (!expense) return res.status(404).json({ message: "Expense not found" });
+
+      const isMember = await storage.isGroupMember(expense.groupId, user.id);
+      if (!isMember) return res.status(403).json({ message: "Not a member of this group" });
+
+      const { description, amount, paidById, category, splitType, splits, notes } = req.body;
+      if (!description || !amount || !paidById || !splits || splits.length === 0) {
+        return res.status(400).json({ message: "Missing required fields" });
+      }
+
+      const parsedAmount = parseFloat(amount);
+      if (isNaN(parsedAmount) || parsedAmount <= 0) {
+        return res.status(400).json({ message: "Amount must be a positive number" });
+      }
+
+      const updated = await storage.updateExpense(
+        id,
+        user.id,
+        { description, amount: parsedAmount, paidById, category: category || "general", splitType: splitType || "equal", notes },
+        splits.map((s: any) => ({ userId: s.userId, amount: parseFloat(s.amount) }))
+      );
+
+      return res.json({ ...updated, amount: parseFloat(updated.amount) });
+    } catch (err: any) {
+      console.error("Update expense error:", err);
+      return res.status(500).json({ message: "Something went wrong" });
+    }
+  });
+
   // === SETTLEMENT ROUTES ===
   app.post("/api/groups/:id/settlements", requireAuth, async (req, res) => {
     try {
@@ -432,6 +543,25 @@ export async function registerRoutes(
       return res.json(safe);
     } catch (err: any) {
       console.error("Get settlements error:", err);
+      return res.status(500).json({ message: "Something went wrong" });
+    }
+  });
+
+  app.delete("/api/settlements/:id", requireAuth, async (req, res) => {
+    try {
+      const user = req.user!;
+      const id = parseInt(req.params.id as string);
+
+      const settlement = await storage.getSettlement(id);
+      if (!settlement) return res.status(404).json({ message: "Settlement not found" });
+
+      const isMember = await storage.isGroupMember(settlement.groupId, user.id);
+      if (!isMember) return res.status(403).json({ message: "Not a member of this group" });
+
+      await storage.deleteSettlement(id, settlement.groupId, user.id);
+      return res.json({ message: "Deleted" });
+    } catch (err: any) {
+      console.error("Delete settlement error:", err);
       return res.status(500).json({ message: "Something went wrong" });
     }
   });
@@ -517,6 +647,60 @@ export async function registerRoutes(
       return res.json(logs);
     } catch (err: any) {
       console.error("Get audit logs error:", err);
+      return res.status(500).json({ message: "Something went wrong" });
+    }
+  });
+
+  // === EXPORT ROUTE ===
+  app.get("/api/groups/:id/export", requireAuth, async (req, res) => {
+    try {
+      const user = req.user!;
+      const groupId = parseInt(req.params.id as string);
+      const isMember = await storage.isGroupMember(groupId, user.id);
+      if (!isMember) return res.status(403).json({ message: "Not a member" });
+
+      const [group, expenses, groupSettlements] = await Promise.all([
+        storage.getGroup(groupId),
+        storage.getGroupExpenses(groupId),
+        storage.getGroupSettlements(groupId),
+      ]);
+
+      const escape = (v: string) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+
+      const rows: string[] = [
+        ["Type", "Date", "Description", "Category", "Amount", "PaidBy", "Notes"].join(","),
+      ];
+
+      for (const e of expenses) {
+        rows.push([
+          "expense",
+          escape(new Date(e.createdAt).toLocaleDateString()),
+          escape(e.description),
+          escape(e.category),
+          parseFloat(e.amount).toFixed(2),
+          escape(e.paidBy.displayName),
+          escape(e.notes ?? ""),
+        ].join(","));
+      }
+
+      for (const s of groupSettlements) {
+        rows.push([
+          "settlement",
+          escape(new Date(s.createdAt).toLocaleDateString()),
+          escape(`${s.paidBy.displayName} → ${s.paidTo.displayName}`),
+          "",
+          parseFloat(s.amount).toFixed(2),
+          escape(s.paidBy.displayName),
+          escape(s.notes ?? ""),
+        ].join(","));
+      }
+
+      const filename = `${(group?.name ?? "group").replace(/[^a-z0-9]/gi, "_")}-export.csv`;
+      res.setHeader("Content-Type", "text/csv");
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      return res.send(rows.join("\n"));
+    } catch (err: any) {
+      console.error("Export error:", err);
       return res.status(500).json({ message: "Something went wrong" });
     }
   });
