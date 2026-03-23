@@ -62,7 +62,8 @@ export async function registerRoutes(
   // === AUTH ROUTES ===
   app.post("/api/auth/register", authLimiter, async (req, res) => {
     try {
-      const { username, password, displayName, email } = req.body;
+      const { username: rawUsername, password, displayName, email } = req.body;
+      const username = typeof rawUsername === "string" ? rawUsername.trim().toLowerCase() : rawUsername;
       if (!username || !password || !displayName || !email) {
         return res.status(400).json({ message: "All fields are required" });
       }
@@ -133,7 +134,8 @@ export async function registerRoutes(
 
   app.post("/api/auth/login", authLimiter, async (req, res) => {
     try {
-      const { username, password } = req.body;
+      const { username: rawUsername, password } = req.body;
+      const username = typeof rawUsername === "string" ? rawUsername.trim().toLowerCase() : rawUsername;
       if (!username || !password) {
         return res.status(400).json({ message: "Username and password are required" });
       }

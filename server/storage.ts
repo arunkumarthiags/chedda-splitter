@@ -10,7 +10,7 @@ import {
 } from "@shared/schema";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, desc, sql } from "drizzle-orm";
 import crypto from "crypto";
 
 const client = postgres(process.env.DATABASE_URL!, {
@@ -80,7 +80,7 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getUserByUsername(username: string): Promise<User | undefined> {
-    const rows = await db.select().from(users).where(eq(users.username, username));
+    const rows = await db.select().from(users).where(sql`lower(${users.username}) = lower(${username})`);
     return rows[0];
   }
 

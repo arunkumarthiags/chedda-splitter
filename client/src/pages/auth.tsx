@@ -211,6 +211,9 @@ export default function AuthPage() {
                     value={username}
                     onChange={e => setUsername(e.target.value)}
                     required
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
                   />
                 </div>
                 {mode === "register" && (
